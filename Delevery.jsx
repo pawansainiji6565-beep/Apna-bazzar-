@@ -1,0 +1,24 @@
+import {useMemo,useState} from 'react'
+import {sb,Logo,toast,ring,useOrders,PinScreen,ICON} from './lib'
+export default function Delivery(){const[ok,setOk]=useState(false),[name,setName]=useState(''),[rider,setRider]=useState('')
+if(!ok)return <PinScreen title="Delivery Partner Login" onPin={p=>p==='9999'?(setOk(true),true):false}/>
+if(!rider)return <div className="min-h-screen grid place-items-center bg-yellow-100 p-6"><div className="bg-white p-6 rounded-2xl w-full max-w-xs text-center space-y-3"><Logo size={64}/><b className="block">Your Name, Rider</b><input value={name} onChange={e=>setName(e.target.value)} className="w-full border rounded-xl px-3"/><button onClick={()=>name.trim()&&setRider(name.trim())} className="w-full bg-green-600 text-white font-bold rounded-xl">Start</button></div></div>
+return <Rider rider={rider}/>}
+const go=(g,v)=>sb.from('orders').update(v).eq('order_group_id',g)
+function Rider({rider}){const[ticks,setTicks]=useState({})
+const orders=useOrders(null,(e,r)=>{if(e==='INSERT'&&r.status==='Pending'){ring('beep');toast('🛵 New order!')}})
+const groups=useMemo(()=>{const m={};orders.forEach(o=>(m[o.order_group_id]??=[]).push(o));return Object.values(m)},[orders])
+const pending=groups.filter(g=>g.every(o=>o.status==='Pending'&&!o.rider_name))
+const mine=groups.filter(g=>g[0].rider_name===rider&&['Accepted','Out for Delivery'].includes(g[0].status))
+const dl=groups.filter(g=>g[0].rider_name===rider&&g.every(o=>o.status==='Delivered')&&new Date(g[0].created_at).toDateString()===new Date().toDateString())
+const cash=dl.reduce((a,g)=>a+(+g[0].group_total||0),0)
+const accept=async g=>{const{data}=await sb.from('orders').update({rider_name:rider,status:'Accepted'}).eq('order_group_id',g).is('rider_name',null).select();toast(data?.length?'Order accepted':'Already taken')}
+const Cust=({o})=><div className="bg-blue-50 rounded-xl p-2 text-sm"><b>DELIVER TO</b><div>{o.customer_name}</div><div>{o.address}</div><div className="flex gap-2 mt-1"><a href={`tel:${o.phone}`} className="bg-blue-600 text-white rounded-lg px-4 leading-[44px]">📞 Call</a><a target="_blank" href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(o.address)}`} className="bg-white border rounded-lg px-4 leading-[44px]">🗺️ Map</a></div></div>
+return <div className="max-w-md mx-auto min-h-screen bg-white pb-10"><div className="bg-yellow-300 p-3 flex items-center gap-2"><Logo size={36}/><b className="flex-1">Rider: {rider}</b></div>
+<div className="grid grid-cols-2 gap-2 p-3 text-center"><div className="bg-green-100 rounded-xl p-2">Delivered Today<br/><b className="text-2xl">{dl.length}</b></div><div className="bg-yellow-100 rounded-xl p-2">Cash Collected<br/><b className="text-2xl">₹{cash}</b></div></div>
+{mine.map(g=>{const o=g[0],out=o.status==='Out for Delivery',all=g.every(x=>x.items_json.every((_,i)=>ticks[x.id+'-'+i]));return <div key={o.order_group_id} className="m-3 border-2 border-green-600 rounded-2xl p-3 space-y-2"><b className="text-lg">Order #{o.order_group_id}</b>
+{!out&&<><div className="font-extrabold text-green-800">📋 SHOP PICKUP LIST</div>{g.map(x=><div key={x.id} className="bg-yellow-50 rounded-xl p-2"><b>{ICON[x.shop_name]} {x.shop_name} Store — Order #{x.order_group_id}</b>{x.items_json.map((i,n)=><label key={n} className="flex items-center gap-3 py-2 text-lg"><input type="checkbox" className="w-7 h-7" checked={!!ticks[x.id+'-'+n]} onChange={e=>setTicks({...ticks,[x.id+'-'+n]:e.target.checked})}/>{i.name} - {i.qty}×{i.unit}</label>)}</div>)}
+<button disabled={!all} onClick={()=>go(o.order_group_id,{status:'Out for Delivery'})} className="w-full py-4 rounded-2xl bg-green-600 disabled:bg-gray-300 text-white font-bold">Picked Up (Out for Delivery)</button></>}
+{out&&<><Cust o={o}/><div className="text-center bg-red-50 rounded-xl p-2">CASH TO COLLECT<div className="text-3xl font-extrabold text-red-600">₹{o.group_total}</div></div><button onClick={()=>go(o.order_group_id,{status:'Delivered'}).then(()=>toast('Delivered ✅'))} className="w-full py-4 rounded-2xl bg-green-600 text-white font-bold">Mark as Delivered & Cash Collected</button></>}</div>})}
+<h3 className="font-bold px-3">New Orders ({pending.length})</h3>
+{pending.map(g=>{const o=g[0];return <div key={o.order_group_id} className="m-3 border rounded-2xl p-3 space-y-2"><b>#{o.order_group_id}</b>{g.map(x=><div key={x.id} className="text-sm bg-gray-50 rounded-xl p-2"><b>PICKUP FROM: {x.shop_name} Store</b>{x.items_json.map((i,n)=><div key={n}>{i.name} - {i.qty}×{i.unit}</div>)}</div>)}<div className="text-sm text-gray-600">📍 {o.address}</div><div className="font-bold text-red-600">CASH TO COLLECT: ₹{o.group_total}</div><button onClick={()=>accept(o.order_group_id)} className="w-full py-3 rounded-2xl bg-yellow-300 font-bold">Accept Order</button></div>})}</div>}
