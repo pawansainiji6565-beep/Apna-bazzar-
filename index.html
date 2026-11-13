@@ -1,0 +1,170 @@
+import {useEffect,useState} from 'react'
+import {sb,SHOPS,LABEL,ICON,Logo,toast,ring,upload,useOrders,PinScreen} from './lib'
+const PINS={'1111':'Vegetable','2222':'Kirana','3333':'Plastic','4444':'Medical','0000':'MASTER'}
+export default function Admin(){const[u,setU]=useState(null)
+if(!u)return <PinScreen title="Shopkeeper Login" onPin={p=>PINS[p]?(setU(PINS[p]),true):false}/>
+return <div className="max-w-2xl mx-auto min-h-screen bg-white"><div className="sticky top-0 z-20 bg-yellow-300 p-3 flex items-center gap-2"><Logo size={36}/><b className="flex-1">Apna Bazaar — {u==='MASTER'?'Master Admin':LABEL[u]}</b><button onClick={()=>setU(null)} className="text-sm underline">Logout</button></div>{u==='MASTER'?<Master/>:<Shop shop={u}/>}</div>}
+const Tabs=({tabs,t,setT})=><div className="flex gap-2 p-3 overflow-x-auto">{tabs.map(x=><button key={x} onClick={()=>setT(x)} className={`px-4 rounded-full font-semibold whitespace-nowrap ${t===x?'bg-green-600 text-white':'bg-gray-100'}`}>{x}</button>)}</div>
+function Toggle({shop,on,commission}){return <button onClick={async()=>{await sb.from('shop_settings').update({is_open:!on}).eq('shop_name',shop);toast(`${shop} ${on?'closed':'opened'}`)}} className={`w-full rounded-2xl py-4 text-lg font-extrabold text-white ${on?'bg-green-600':'bg-red-600'}`}>Store Status: {on?'OPEN':'CLOSED'} <span className="text-xs font-normal">(tap to switch)</span></button>}
+function Shop({shop}){const[t,setT]=useState('Orders'),[s,setS]=useState({})
+useEffect(()=>{const l=()=>sb.from('shop_settings').select('*').eq('shop_name',shop).single().then(r=>setS(r.data||{}));l();const ch=sb.channel('s'+shop).on('postgres_changes',{event:'*',schema:'public',table:'shop_settings'},l).subscribe();return()=>{sb.removeChannel(ch)}},[shop])
+const orders=useOrders(shop,(e,r)=>{if(e==='INSERT'&&r.status==='Pending'){ring('bell');toast('🔔 New order!')}})
+const today=orders.filter(o=>o.status==='Delivered')
+return <><div className="p-3"><Toggle shop={shop} on={s.is_open!==false}/></div><Tabs tabs={['Orders','Inventory']} t={t} setT={setT}/>
+{t==='Orders'?<div className="p-3 space-y-3"><div className="text-sm bg-green-50 rounded-xl p-2">Delivered sales: <b>₹{today.reduce((a,o)=>a+o.total_amount,0)}</b> ({today.length} orders)</div>
+{orders.map(o=><div key={o.id} className="border rounded-2xl p-3 text-sm"><div className="flex justify-between"><b>#{o.order_group_id}</b><span className="bg-yellow-200 rounded-full px-2 font-bold">{o.status}</span></div>
+<div>{o.customer_name} • <a className="text-blue-600" href={`tel:${o.phone}`}>{o.phone}</a></div><div className="text-gray-500">{o.address}</div>
+<ul className="my-2 list-disc ml-5">{o.items_json?.map((i,x)=><li key={x}>{i.name} ({i.unit}) × {i.qty}</li>)}</ul>
+{o.prescription_url&&<a href={o.prescription_url} target="_blank"><img src={o.prescription_url} className="h-24 rounded"/>Prescription</a>}
+<div className="flex justify-between font-bold"><span>Shop total ₹{o.total_amount}</span><span>{o.rider_name?`🛵 ${o.rider_name}`:'Awaiting rider'}</span></div></div>)}</div>:<Inventory shop={shop}/>}</>}
+const parse=t=>{const[h,...r]=t.trim().split(/\r?\n/);const k=h.split(',').map(s=>s.trim().toLowerCase());return r.map(l=>{const c=l.split(',');return Object.fromEntries(k.map((x,i)=>[x,(c[i]||'').trim()]))})}
+function Inventory({shop}){const[ps,setPs]=useState([]),[q,setQ]=useState(''),[f,setF]=useState({name:'',unit:'',mrp:'',selling_price:'',shop_name:shop||'Vegetable',image_url:''}),[ed,setEd]=useState(null)
+const load=()=>{let x=sb.from('products').select('*').order('id',{ascending:false});if(shop)x=x.eq('shop_name',shop);x.then(r=>setPs(r.data||[]))};useEffect(load,[shop])
+const add=async()=>{if(!f.name||!f.selling_price)return toast('Name & price needed');const{error}=await sb.from('products').insert({...f,mrp:+(f.mrp||f.selling_price),selling_price:+f.selling_price,in_stock:true});if(error)return toast('Failed');toast('Product added');setF({...f,name:'',unit:'',mrp:'',selling_price:'',image_url:''});load()}
+const csv=async e=>{const txt=await e.target.files[0].text();const rows=parse(txt).map(r=>({name:r.name,shop_name:shop||r.shop_name,unit:r.unit,mrp:+(r.mrp||r.price),selling_price:+r.price,image_url:r.image_url,in_stock:true})).filter(r=>r.name&&SHOPS.includes(r.shop_name)&&r.selling_price>0);if(!rows.length)return toast('No valid rows');const{error}=await sb.from('products').insert(rows);toast(error?'CSV failed':`${rows.length} products added`);load()}
+const save=async()=>{await sb.from('products').update({mrp:+ed.mrp,selling_price:+ed.selling_price}).eq('id',ed.id);setEd(null);toast('Price updated');load()}
+return <div className="p-3 space-y-3"><div className="border rounded-2xl p-3 space-y-2 bg-gray-50"><b>Add Product</b>
+{!shop&&<select value={f.shop_name} onChange={e=>setF({...f,shop_name:e.target.value})} className="w-full border rounded-xl px-2">{SHOPS.map(s=><option key={s}>{s}</option>)}</select>}
+<input placeholder="Name" value={f.name} onChange={e=>setF({...f,name:e.target.value})} className="w-full border rounded-xl px-3"/><div className="grid grid-cols-3 gap-2">{[['unit','Unit'],['mrp','MRP'],['selling_price','Price']].map(([k,p])=><input key={k} placeholder={p} value={f[k]} onChange={e=>setF({...f,[k]:e.target.value})} className="border rounded-xl px-2"/>)}</div>
+<label className="block text-sm">📷 Photo (camera/gallery) <input type="file" accept="image/*" onChange={async e=>{const u=await upload(e.target.files[0]);if(u){setF({...f,image_url:u});toast('Photo uploaded')}}}/></label>{f.image_url&&<img src={f.image_url} className="h-16 rounded"/>}
+<div className="flex gap-2"><button onClick={add} className="flex-1 bg-green-600 text-white font-bold rounded-xl">Add</button><label className="flex-1 bg-yellow-300 font-bold rounded-xl grid place-items-center cursor-pointer">Upload CSV<input type="file" accept=".csv" hidden onChange={csv}/></label></div>
+<p className="text-xs text-gray-500">CSV columns: name,shop_name,unit,price,image_url</p></div>
+<input placeholder="Search products…" value={q} onChange={e=>setQ(e.target.value)} className="w-full border rounded-xl px-3"/>
+{ps.filter(p=>p.name.toLowerCase().includes(q.toLowerCase())).map(p=><div key={p.id} className="flex items-center gap-2 border rounded-xl p-2 text-sm"><img src={p.image_url} className="w-12 h-12 rounded object-cover bg-gray-100"/>
+<div className="flex-1">{p.name}<div className="text-xs text-gray-500">{!shop&&p.shop_name+' • '}{p.unit}</div>
+{ed?.id===p.id?<div className="flex gap-1 mt-1"><input className="w-16 border rounded px-1" value={ed.mrp} onChange={e=>setEd({...ed,mrp:e.target.value})}/><input className="w-16 border rounded px-1" value={ed.selling_price} onChange={e=>setEd({...ed,selling_price:e.target.value})}/><button className="bg-green-600 text-white rounded px-2" onClick={save}>Save</button></div>:<div>₹{p.selling_price} <s className="text-gray-400">₹{p.mrp}</s> {!shop&&<button className="text-blue-600 underline ml-1" onClick={()=>setEd(p)}>Quick Edit Price</button>}</div>}</div>
+<button onClick={async()=>{await sb.from('products').update({in_stock:!p.in_stock}).eq('id',p.id);toast(p.in_stock?'Marked out of stock':'Marked in stock');load()}} className={`rounded-lg px-3 text-xs font-bold text-white ${p.in_stock?'bg-green-600':'bg-red-600'}`}>{p.in_stock?'In Stock':'Out of Stock'}</button></div>)}</div>}
+function Master(){const[t,setT]=useState('Shops'),[ss,setSs]=useState([]),[cps,setCps]=useState([]),[banner,setBanner]=useState(''),[nc,setNc]=useState({code:'',discount_amount:'',min_order_amount:''})
+const orders=useOrders(null);const load=async()=>{setSs((await sb.from('shop_settings').select('*').order('shop_name')).data||[]);setCps((await sb.from('coupons').select('*')).data||[]);setBanner((await sb.from('app_settings').select('*').eq('key','banner').maybeSingle()).data?.value||'')}
+useEffect(()=>{load()},[]);const all=async v=>{await sb.from('shop_settings').update({is_open:v}).in('shop_name',SHOPS);toast(v?'All shops open':'All shops closed');load()}
+return <><Tabs tabs={['Shops','Products','Offers & Coupons']} t={t} setT={setT}/>
+{t==='Shops'&&<div className="p-3 space-y-3"><div className="flex gap-2"><button onClick={()=>all(true)} className="flex-1 bg-green-600 text-white font-bold rounded-xl">Open ALL</button><button onClick={()=>all(false)} className="flex-1 bg-red-600 text-white font-bold rounded-xl">Close ALL</button></div>
+{ss.map(s=>{const d=orders.filter(o=>o.shop_name===s.shop_name&&o.status==='Delivered'),sales=d.reduce((a,o)=>a+o.total_amount,0),com=Math.round(sales*s.commission_pct)/100;return <div key={s.shop_name} className="border rounded-2xl p-3 space-y-2"><b>{ICON[s.shop_name]} {LABEL[s.shop_name]}</b><Toggle shop={s.shop_name} on={s.is_open} />
+<label className="text-sm flex items-center gap-2">Commission % <input defaultValue={s.commission_pct} className="w-20 border rounded-xl px-2" onBlur={async e=>{await sb.from('shop_settings').update({commission_pct:+e.target.value}).eq('shop_name',s.shop_name);toast('Commission updated');load()}}/></label>
+<div className="grid grid-cols-3 text-center text-sm gap-1"><div className="bg-gray-50 rounded p-1">Total Sales<br/><b>₹{sales}</b></div><div className="bg-yellow-100 rounded p-1">My Commission<br/><b>₹{com}</b></div><div className="bg-green-100 rounded p-1">Net Payable<br/><b>₹{sales-com}</b></div></div></div>})}</div>}
+{t==='Products'&&<Inventory shop={null}/>}
+{t==='Offers & Coupons'&&<div className="p-3 space-y-3"><b>Homepage Banner</b><input value={banner} onChange={e=>setBanner(e.target.value)} className="w-full border rounded-xl px-3"/><button className="bg-green-600 text-white font-bold rounded-xl px-4" onClick={async()=>{await sb.from('app_settings').upsert({key:'banner',value:banner});toast('Banner saved')}}>Save Banner</button>
+<b className="block">New Coupon</b><div className="grid grid-cols-3 gap-2">{[['code','CODE'],['discount_amount','₹ Off'],['min_order_amount','Min ₹']].map(([k,p])=><input key={k} placeholder={p} value={nc[k]} onChange={e=>setNc({...nc,[k]:e.target.value})} className="border rounded-xl px-2"/>)}</div>
+<button className="w-full bg-yellow-300 font-bold rounded-xl" onClick={async()=>{if(!nc.code)return;const{error}=await sb.from('coupons').upsert({code:nc.code.toUpperCase(),discount_amount:+nc.discount_amount,min_order_amount:+nc.min_order_amount,is_active:true});toast(error?'Failed':'Coupon saved');setNc({code:'',discount_amount:'',min_order_amount:''});load()}}>Add Coupon</button>
+{cps.map(c=><div key={c.code} className="flex justify-between items-center border rounded-xl p-2"><div><b>{c.code}</b><div className="text-xs">₹{c.discount_amount} off above ₹{c.min_order_amount}</div></div><button onClick={async()=>{await sb.from('coupons').update({is_active:!c.is_active}).eq('code',c.code);load()}} className={`px-4 rounded-lg text-white font-bold ${c.is_active?'bg-green-600':'bg-gray-400'}`}>{c.is_active?'ON':'OFF'}</button></div>)}</div>}</>}
+import {useEffect,useState} from 'react'
+import {sb,SHOPS,LABEL,ICON,Logo,toast,upload,off} from './lib'
+const STEPS=['Pending','Accepted','Out for Delivery','Delivered'],STEP_TXT=['Order Placed','Rider Assigned','Out for Delivery','Delivered']
+export default function App(){
+const[splash,setSplash]=useState(true),[prods,setProds]=useState([]),[shops,setShops]=useState({}),[cart,setCart]=useState({}),[cat,setCat]=useState('All'),[q,setQ]=useState(''),[open,setOpen]=useState(false),[banner,setBanner]=useState(''),[done,setDone]=useState(null),[loc,setLoc]=useState(localStorage.loc||'Set your area')
+useEffect(()=>{setTimeout(()=>setSplash(false),2000)
+const load=async()=>{const[p,s,b]=await Promise.all([sb.from('products').select('*').order('id'),sb.from('shop_settings').select('*'),sb.from('app_settings').select('*').eq('key','banner').maybeSingle()]);setProds(p.data||[]);setShops(Object.fromEntries((s.data||[]).map(x=>[x.shop_name,x])));setBanner(b.data?.value||'')}
+load();const ch=sb.channel('pub').on('postgres_changes',{event:'*',schema:'public',table:'shop_settings'},load).on('postgres_changes',{event:'*',schema:'public',table:'products'},load).subscribe();return()=>{sb.removeChannel(ch)}},[])
+const isOpen=s=>shops[s]?.is_open!==false
+const add=(p,d)=>{setCart(c=>{const n={...c,[p.id]:Math.max(0,(c[p.id]||0)+d)};if(!n[p.id])delete n[p.id];return n});if(d>0)toast('Added to cart')}
+const lines=prods.filter(p=>cart[p.id]).map(p=>({...p,qty:cart[p.id]}))
+const count=lines.reduce((a,l)=>a+l.qty,0),total=lines.reduce((a,l)=>a+l.qty*l.selling_price,0)
+const list=prods.filter(p=>(cat==='All'||p.shop_name===cat)&&p.name.toLowerCase().includes(q.toLowerCase()))
+if(splash)return <div className="fixed inset-0 bg-gradient-to-b from-yellow-300 to-green-500 grid place-items-center text-center"><div><div style={{animation:'ride 1s ease-out'}}><div style={{animation:'pop .8s'}} className="inline-block"><Logo size={140}/></div></div><h1 className="text-4xl font-extrabold text-green-900 mt-4">Apna Bazaar</h1><p className="text-green-900 font-medium mt-1">Fast Local Delivery in 10-15 Mins</p></div></div>
+if(done)return <Done gid={done} onBack={()=>setDone(null)}/>
+return <div className="max-w-md mx-auto pb-28 min-h-screen bg-white">
+<header className="sticky top-0 z-30 bg-gradient-to-r from-yellow-300 to-green-400 p-3 shadow">
+<div className="flex items-center gap-2"><Logo size={40}/><div className="flex-1 leading-tight"><b className="text-green-900 text-lg">Apna Bazaar</b><div className="text-xs font-semibold text-green-900">⚡ Delivery in 10-15 mins</div></div>
+<button className="text-xs bg-white/70 rounded-full px-3" onClick={()=>{const a=prompt('Your delivery area?',loc);if(a){setLoc(a);localStorage.loc=a}}}>📍 {loc}</button></div>
+<input value={q} onChange={e=>setQ(e.target.value)} placeholder="Search products…" className="w-full mt-2 rounded-xl px-4 bg-white"/></header>
+{banner&&<div className="m-3 p-3 rounded-xl bg-green-100 text-green-800 text-sm font-semibold">{banner}</div>}
+<div className="grid grid-cols-2 gap-3 px-3">{SHOPS.map(s=><button key={s} onClick={()=>setCat(cat===s?'All':s)} className={`relative rounded-2xl p-4 text-left border-2 min-h-24 ${cat===s?'border-green-600 bg-green-50':'border-gray-200 bg-yellow-50'}`}><div className="text-3xl">{ICON[s]}</div><div className="font-bold text-sm">{LABEL[s]}</div>{!isOpen(s)&&<span className="absolute top-2 right-2 bg-red-600 text-white text-[10px] font-bold px-2 py-0.5 rounded-full">CLOSED</span>}</button>)}</div>
+<div className="px-3 mt-3"><button onClick={()=>setCat('All')} className={`px-5 rounded-full font-semibold ${cat==='All'?'bg-green-600 text-white':'bg-gray-100'}`}>All</button></div>
+<div className="grid grid-cols-2 gap-3 p-3">{list.map(p=>{const dis=!isOpen(p.shop_name)||!p.in_stock,n=cart[p.id]||0;return <div key={p.id} className={`border rounded-2xl p-2 flex flex-col ${dis?'opacity-60':''}`}>
+<div className="relative"><img src={p.image_url} alt={p.name} className="w-full aspect-square object-cover rounded-xl bg-gray-100"/><span className="absolute top-1 left-1 bg-yellow-300 text-[10px] font-bold px-2 rounded-full">{ICON[p.shop_name]} {p.shop_name}</span>{off(p)>0&&<span className="absolute top-1 right-1 bg-blue-600 text-white text-[10px] font-bold px-1.5 rounded">{off(p)}% OFF</span>}</div>
+<div className="font-semibold text-sm mt-1 leading-tight">{p.name}</div><div className="text-xs text-gray-500">{p.unit}</div>
+<div className="flex items-end justify-between mt-auto pt-2"><div><b>₹{p.selling_price}</b> {p.mrp>p.selling_price&&<s className="text-xs text-gray-400">₹{p.mrp}</s>}</div>
+{!p.in_stock?<span className="text-xs text-red-600 font-bold">Out of stock</span>:n===0?<button disabled={dis} onClick={()=>add(p,1)} className="border-2 border-green-600 text-green-700 font-bold rounded-lg px-4 disabled:border-gray-300 disabled:text-gray-400">ADD</button>:
+<div className="flex items-center bg-green-600 text-white rounded-lg font-bold"><button className="w-9" onClick={()=>add(p,-1)}>−</button><span className="w-6 text-center">{n}</span><button className="w-9" onClick={()=>add(p,1)}>+</button></div>}</div></div>})}</div>
+{count>0&&<button onClick={()=>setOpen(true)} className="fixed bottom-3 inset-x-3 max-w-md mx-auto z-40 bg-green-600 text-white rounded-2xl p-4 flex justify-between font-bold shadow-xl"><span>{count} item{count>1&&'s'} • ₹{total}</span><span>View Cart ›</span></button>}
+{open&&<Cart lines={lines} add={add} isOpen={isOpen} close={()=>setOpen(false)} onDone={g=>{setCart({});setOpen(false);setDone(g)}}/>}</div>}
+function Cart({lines,add,isOpen,close,onDone}){
+const[code,setCode]=useState(''),[cp,setCp]=useState(null),[f,setF]=useState({name:'',phone:'',address:''}),[rx,setRx]=useState(null),[busy,setBusy]=useState(false)
+const by={};lines.forEach(l=>(by[l.shop_name]??=[]).push(l))
+const total=lines.reduce((a,l)=>a+l.qty*l.selling_price,0),k=Object.keys(by).length
+const fee=total>=199?0:k?15+5*(k-1):0,disc=cp&&total>=cp.min_order_amount?cp.discount_amount:0,grand=total+fee-disc
+const closed=Object.keys(by).filter(s=>!isOpen(s))
+const apply=async()=>{const{data}=await sb.from('coupons').select('*').eq('code',code.trim().toUpperCase()).eq('is_active',true).maybeSingle();if(!data)return toast('Invalid coupon');if(total<data.min_order_amount)return toast(`Min order ₹${data.min_order_amount}`);setCp(data);toast('Coupon applied')}
+const place=async()=>{if(closed.length)return toast(`${closed.join(', ')} closed — remove items`);if(!f.name||f.phone.length<10||!f.address)return toast('Fill name, 10-digit mobile & address')
+setBusy(true);const gid='AB'+Date.now().toString(36).toUpperCase()
+const rows=Object.entries(by).map(([s,ls])=>({order_group_id:gid,shop_name:s,customer_name:f.name,phone:f.phone,address:f.address,items_json:ls.map(l=>({name:l.name,unit:l.unit,qty:l.qty,price:l.selling_price})),prescription_url:s==='Medical'?rx:null,total_amount:ls.reduce((a,l)=>a+l.qty*l.selling_price,0),group_total:grand,status:'Pending'}))
+const{error}=await sb.from('orders').insert(rows);setBusy(false);if(error)return toast('Order failed');onDone(gid)}
+return <div className="fixed inset-0 z-50 bg-black/50 flex justify-end" onClick={close}><div onClick={e=>e.stopPropagation()} className="bg-white w-full max-w-md h-full overflow-y-auto p-4 animate-[pop_.2s]">
+<div className="flex justify-between items-center"><h2 className="font-bold text-xl">Your Cart</h2><button onClick={close} className="text-2xl w-11">✕</button></div>
+<div className="mt-2 p-3 bg-green-50 rounded-xl text-sm">{total>=199?'🎉 You get FREE delivery!':`Add ₹${199-total} more for FREE delivery`}<div className="h-2 bg-white rounded mt-1"><div className="h-2 bg-green-600 rounded" style={{width:Math.min(100,total/199*100)+'%'}}/></div></div>
+{Object.entries(by).map(([s,ls])=><div key={s} className="mt-3"><div className="font-bold bg-yellow-100 rounded-lg px-3 py-1">{ICON[s]} {LABEL[s]} {!isOpen(s)&&<span className="text-red-600 text-xs">(CLOSED)</span>}</div>
+{ls.map(l=><div key={l.id} className="flex items-center justify-between py-2 border-b text-sm"><div>{l.name}<div className="text-xs text-gray-500">{l.unit} • ₹{l.selling_price}</div></div><div className="flex items-center gap-2"><div className="flex bg-green-600 text-white rounded-lg font-bold"><button className="w-9" onClick={()=>add(l,-1)}>−</button><span className="w-6 text-center leading-[44px]">{l.qty}</span><button className="w-9" onClick={()=>add(l,1)}>+</button></div><b className="w-12 text-right">₹{l.qty*l.selling_price}</b></div></div>)}</div>)}
+{by.Medical&&<div className="mt-3 p-3 border-2 border-dashed rounded-xl"><b className="text-sm">💊 Upload Prescription Photo (optional)</b><input type="file" accept="image/*" capture="environment" className="block mt-1 text-sm" onChange={async e=>{const u=await upload(e.target.files[0]);if(u){setRx(u);toast('Prescription uploaded')}}}/>{rx&&<img src={rx} className="h-20 mt-2 rounded"/>}</div>}
+<div className="flex gap-2 mt-3"><input value={code} onChange={e=>setCode(e.target.value)} placeholder="Coupon code" className="flex-1 border rounded-xl px-3 uppercase"/><button onClick={apply} className="bg-yellow-300 font-bold rounded-xl px-4">Apply</button></div>
+<div className="mt-3 text-sm space-y-1 bg-gray-50 p-3 rounded-xl"><Row a="Item Total" b={'₹'+total}/><Row a={`Delivery (${k} shop${k>1?'s':''})`} b={fee?'₹'+fee:'FREE'}/>{disc>0&&<Row a={`Coupon ${cp.code}`} b={'−₹'+disc}/>}<div className="border-t pt-1"><Row a={<b>Grand Total</b>} b={<b>₹{grand}</b>}/></div></div>
+{['name','phone','address'].map(x=><input key={x} value={f[x]} inputMode={x==='phone'?'numeric':undefined} maxLength={x==='phone'?10:200} onChange={e=>setF({...f,[x]:e.target.value})} placeholder={{name:'Customer Name',phone:'Mobile Number',address:'Full Address'}[x]} className="w-full border rounded-xl px-3 mt-2"/>)}
+<button disabled={busy||!lines.length} onClick={place} className="w-full mt-4 bg-green-600 disabled:bg-gray-400 text-white font-bold rounded-2xl py-4">{busy?'Placing…':`Place Order (Cash on Delivery) • ₹${grand}`}</button></div></div>}
+const Row=({a,b})=><div className="flex justify-between"><span>{a}</span><span>{b}</span></div>
+function Done({gid,onBack}){const[rows,setRows]=useState([])
+useEffect(()=>{const l=()=>sb.from('orders').select('*').eq('order_group_id',gid).then(r=>setRows(r.data||[]));l();const ch=sb.channel('t'+gid).on('postgres_changes',{event:'UPDATE',schema:'public',table:'orders',filter:`order_group_id=eq.${gid}`},l).subscribe();return()=>{sb.removeChannel(ch)}},[gid])
+const st=Math.min(...rows.map(r=>STEPS.indexOf(r.status)).filter(i=>i>=0),3),rider=rows.find(r=>r.rider_name)?.rider_name
+return <div className="max-w-md mx-auto min-h-screen bg-white p-5 text-center"><div className="flex justify-center"><Logo size={80}/></div><h1 className="text-2xl font-extrabold text-green-700 mt-2">Order Confirmed! ✅</h1><p className="text-gray-500">Order ID: <b>{gid}</b></p><p className="text-sm">Pay ₹{rows[0]?.group_total} cash on delivery</p>
+<div className="text-left mt-6 space-y-4">{STEP_TXT.map((t,i)=><div key={t} className="flex items-center gap-3"><div className={`w-8 h-8 rounded-full grid place-items-center font-bold ${i<=st?'bg-green-600 text-white':'bg-gray-200'}`}>{i<=st?'✓':i+1}</div><div className={i<=st?'font-bold':'text-gray-400'}>{t}{i===1&&rider&&i<=st?` — ${rider}`:''}</div></div>)}</div>
+<button onClick={onBack} className="mt-8 w-full bg-yellow-300 font-bold rounded-2xl py-3">Continue Shopping</button></div>}
+ import {useMemo,useState} from 'react'
+import {sb,Logo,toast,ring,useOrders,PinScreen,ICON} from './lib'
+export default function Delivery(){const[ok,setOk]=useState(false),[name,setName]=useState(''),[rider,setRider]=useState('')
+if(!ok)return <PinScreen title="Delivery Partner Login" onPin={p=>p==='9999'?(setOk(true),true):false}/>
+if(!rider)return <div className="min-h-screen grid place-items-center bg-yellow-100 p-6"><div className="bg-white p-6 rounded-2xl w-full max-w-xs text-center space-y-3"><Logo size={64}/><b className="block">Your Name, Rider</b><input value={name} onChange={e=>setName(e.target.value)} className="w-full border rounded-xl px-3"/><button onClick={()=>name.trim()&&setRider(name.trim())} className="w-full bg-green-600 text-white font-bold rounded-xl">Start</button></div></div>
+return <Rider rider={rider}/>}
+const go=(g,v)=>sb.from('orders').update(v).eq('order_group_id',g)
+function Rider({rider}){const[ticks,setTicks]=useState({})
+const orders=useOrders(null,(e,r)=>{if(e==='INSERT'&&r.status==='Pending'){ring('beep');toast('🛵 New order!')}})
+const groups=useMemo(()=>{const m={};orders.forEach(o=>(m[o.order_group_id]??=[]).push(o));return Object.values(m)},[orders])
+const pending=groups.filter(g=>g.every(o=>o.status==='Pending'&&!o.rider_name))
+const mine=groups.filter(g=>g[0].rider_name===rider&&['Accepted','Out for Delivery'].includes(g[0].status))
+const dl=groups.filter(g=>g[0].rider_name===rider&&g.every(o=>o.status==='Delivered')&&new Date(g[0].created_at).toDateString()===new Date().toDateString())
+const cash=dl.reduce((a,g)=>a+(+g[0].group_total||0),0)
+const accept=async g=>{const{data}=await sb.from('orders').update({rider_name:rider,status:'Accepted'}).eq('order_group_id',g).is('rider_name',null).select();toast(data?.length?'Order accepted':'Already taken')}
+const Cust=({o})=><div className="bg-blue-50 rounded-xl p-2 text-sm"><b>DELIVER TO</b><div>{o.customer_name}</div><div>{o.address}</div><div className="flex gap-2 mt-1"><a href={`tel:${o.phone}`} className="bg-blue-600 text-white rounded-lg px-4 leading-[44px]">📞 Call</a><a target="_blank" href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(o.address)}`} className="bg-white border rounded-lg px-4 leading-[44px]">🗺️ Map</a></div></div>
+return <div className="max-w-md mx-auto min-h-screen bg-white pb-10"><div className="bg-yellow-300 p-3 flex items-center gap-2"><Logo size={36}/><b className="flex-1">Rider: {rider}</b></div>
+<div className="grid grid-cols-2 gap-2 p-3 text-center"><div className="bg-green-100 rounded-xl p-2">Delivered Today<br/><b className="text-2xl">{dl.length}</b></div><div className="bg-yellow-100 rounded-xl p-2">Cash Collected<br/><b className="text-2xl">₹{cash}</b></div></div>
+{mine.map(g=>{const o=g[0],out=o.status==='Out for Delivery',all=g.every(x=>x.items_json.every((_,i)=>ticks[x.id+'-'+i]));return <div key={o.order_group_id} className="m-3 border-2 border-green-600 rounded-2xl p-3 space-y-2"><b className="text-lg">Order #{o.order_group_id}</b>
+{!out&&<><div className="font-extrabold text-green-800">📋 SHOP PICKUP LIST</div>{g.map(x=><div key={x.id} className="bg-yellow-50 rounded-xl p-2"><b>{ICON[x.shop_name]} {x.shop_name} Store — Order #{x.order_group_id}</b>{x.items_json.map((i,n)=><label key={n} className="flex items-center gap-3 py-2 text-lg"><input type="checkbox" className="w-7 h-7" checked={!!ticks[x.id+'-'+n]} onChange={e=>setTicks({...ticks,[x.id+'-'+n]:e.target.checked})}/>{i.name} - {i.qty}×{i.unit}</label>)}</div>)}
+<button disabled={!all} onClick={()=>go(o.order_group_id,{status:'Out for Delivery'})} className="w-full py-4 rounded-2xl bg-green-600 disabled:bg-gray-300 text-white font-bold">Picked Up (Out for Delivery)</button></>}
+{out&&<><Cust o={o}/><div className="text-center bg-red-50 rounded-xl p-2">CASH TO COLLECT<div className="text-3xl font-extrabold text-red-600">₹{o.group_total}</div></div><button onClick={()=>go(o.order_group_id,{status:'Delivered'}).then(()=>toast('Delivered ✅'))} className="w-full py-4 rounded-2xl bg-green-600 text-white font-bold">Mark as Delivered & Cash Collected</button></>}</div>})}
+<h3 className="font-bold px-3">New Orders ({pending.length})</h3>
+{pending.map(g=>{const o=g[0];return <div key={o.order_group_id} className="m-3 border rounded-2xl p-3 space-y-2"><b>#{o.order_group_id}</b>{g.map(x=><div key={x.id} className="text-sm bg-gray-50 rounded-xl p-2"><b>PICKUP FROM: {x.shop_name} Store</b>{x.items_json.map((i,n)=><div key={n}>{i.name} - {i.qty}×{i.unit}</div>)}</div>)}<div className="text-sm text-gray-600">📍 {o.address}</div><div className="font-bold text-red-600">CASH TO COLLECT: ₹{o.group_total}</div><button onClick={()=>accept(o.order_group_id)} className="w-full py-3 rounded-2xl bg-yellow-300 font-bold">Accept Order</button></div>})}</div>}
+  @import "tailwindcss";
+@keyframes pop{0%{transform:scale(.4);opacity:0}60%{transform:scale(1.1)}100%{transform:scale(1);opacity:1}}
+@keyframes ride{0%{transform:translateX(-120px)}100%{transform:translateX(0)}}
+body{background:#f6f7f4;-webkit-tap-highlight-color:transparent}
+button,input,select{min-height:44px}
+  import {createClient} from '@supabase/supabase-js'
+import {useEffect,useRef,useState} from 'react'
+export const sb=createClient(import.meta.env.VITE_SUPABASE_URL,import.meta.env.VITE_SUPABASE_ANON_KEY)
+export const SHOPS=['Vegetable','Kirana','Plastic','Medical']
+export const LABEL={Vegetable:'Vegetable Store',Kirana:'Kirana Store',Plastic:'Plastic & Daily Use',Medical:'Medical Store'}
+export const ICON={Vegetable:'🥦',Kirana:'🛒',Plastic:'🪣',Medical:'💊'}
+export const LOGO_SVG=`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120"><circle cx="60" cy="60" r="58" fill="#16a34a"/><circle cx="60" cy="60" r="50" fill="#fde047"/><circle cx="36" cy="82" r="11" fill="none" stroke="#14532d" stroke-width="5"/><circle cx="86" cy="82" r="11" fill="none" stroke="#14532d" stroke-width="5"/><path d="M36 82 L52 58 H70 L86 82 M70 58 L64 44 H54" fill="none" stroke="#14532d" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/><rect x="16" y="36" width="30" height="24" rx="4" fill="#16a34a"/><circle cx="60" cy="34" r="8" fill="#14532d"/></svg>`
+export const logoSrc='data:image/svg+xml;utf8,'+encodeURIComponent(LOGO_SVG)
+export const Logo=({size=36})=><img src={logoSrc} width={size} height={size} alt="Apna Bazaar"/>
+export const toast=m=>window.dispatchEvent(new CustomEvent('toast',{detail:m}))
+export function Toasts(){const[t,setT]=useState([]);useEffect(()=>{const f=e=>{const id=Math.random();setT(x=>[...x,{id,m:e.detail}]);setTimeout(()=>setT(x=>x.filter(i=>i.id!==id)),2000)};addEventListener('toast',f);return()=>removeEventListener('toast',f)},[]);return <div className="fixed top-16 inset-x-0 z-[100] flex flex-col items-center gap-2 pointer-events-none">{t.map(i=><div key={i.id} className="bg-gray-900 text-white text-sm px-4 py-2 rounded-full shadow-lg">{i.m}</div>)}</div>}
+export function ring(kind='bell'){try{const c=new(window.AudioContext||window.webkitAudioContext)();const s=kind==='bell'?[880,1175,880,1175,880,1175]:[1000,0,1000,0,1000];s.forEach((f,i)=>{if(!f)return;const t=c.currentTime+i*.25,o=c.createOscillator(),g=c.createGain();o.type=kind==='bell'?'triangle':'square';o.frequency.value=f;g.gain.setValueAtTime(1,t);g.gain.exponentialRampToValueAtTime(.001,t+.24);o.connect(g);g.connect(c.destination);o.start(t);o.stop(t+.25)})}catch{}}
+export async function upload(file){const p=Date.now()+'-'+file.name.replace(/\W/g,'_');const{error}=await sb.storage.from('images').upload(p,file);if(error){toast('Upload failed');return null}return sb.storage.from('images').getPublicUrl(p).data.publicUrl}
+export const off=p=>Math.round((p.mrp-p.selling_price)/p.mrp*100)
+export function useOrders(shop,onEvent){const[o,setO]=useState([]);const cb=useRef(onEvent);cb.current=onEvent
+useEffect(()=>{let q=sb.from('orders').select('*').order('created_at',{ascending:false});if(shop)q=q.eq('shop_name',shop);q.then(r=>setO(r.data||[]))
+const ch=sb.channel('o'+Math.random()).on('postgres_changes',{event:'*',schema:'public',table:'orders',...(shop?{filter:`shop_name=eq.${shop}`}:{})},p=>{const r=p.new;setO(x=>p.eventType==='INSERT'?[r,...x]:x.map(i=>i.id===r.id?r:i));cb.current?.(p.eventType,r)}).subscribe();return()=>{sb.removeChannel(ch)}},[shop]);return o}
+export const PinScreen=({title,onPin})=>{const[p,setP]=useState('');return <div className="min-h-screen grid place-items-center bg-yellow-100 p-6"><div className="bg-white rounded-2xl shadow p-6 w-full max-w-xs text-center"><div className="flex justify-center"><Logo size={72}/></div><h1 className="font-bold text-xl mt-2">Apna Bazaar</h1><p className="text-gray-500 mb-3">{title}</p><input autoFocus inputMode="numeric" maxLength={4} type="password" value={p} onChange={e=>{const v=e.target.value.replace(/\D/g,'');setP(v);if(v.length===4){onPin(v)||toast('Wrong PIN');setP('')}}} className="w-full text-center text-3xl tracking-[.6em] border-2 rounded-xl" placeholder="••••"/></div></div>}
+  import React from 'react';import {createRoot} from 'react-dom/client';import {BrowserRouter,Routes,Route} from 'react-router-dom'
+import './index.css';import App from './App';import Admin from './Admin';import Delivery from './Delivery';import QR from './QR';import {Toasts} from './lib'
+createRoot(document.getElementById('root')).render(<BrowserRouter><Routes><Route path="/" element={<App/>}/><Route path="/admin" element={<Admin/>}/><Route path="/delivery" element={<Delivery/>}/><Route path="/qr" element={<QR/>}/></Routes><Toasts/></BrowserRouter>)
+  import {useEffect,useRef,useState} from 'react'
+import QRCode from 'qrcode'
+import {Logo,logoSrc} from './lib'
+export default function QR(){const url=window.location.origin,c=useRef(),[png,setPng]=useState('')
+useEffect(()=>{(async()=>{const W=1240,H=1754,cv=c.current;cv.width=W;cv.height=H;const x=cv.getContext('2d');x.fillStyle='#fde047';x.fillRect(0,0,W,H);x.fillStyle='#16a34a';x.fillRect(0,0,W,260);x.fillStyle='#fff';x.textAlign='center'
+const img=new Image();img.src=logoSrc;await new Promise(r=>img.onload=r);x.drawImage(img,W/2-160,300,320,320)
+x.fillStyle='#14532d';x.font='bold 120px sans-serif';x.fillText('Apna Bazaar',W/2,740);x.font='bold 62px sans-serif';x.fillText('Scan to Order in 10 Minutes',W/2,840)
+const q=new Image();q.src=await QRCode.toDataURL(url,{width:700,margin:2});await new Promise(r=>q.onload=r);x.fillStyle='#fff';x.fillRect(W/2-380,900,760,760);x.drawImage(q,W/2-350,930,700,700)
+x.fillStyle='#fff';x.font='bold 50px sans-serif';x.fillText('Vegetable • Kirana • Plastic • Medical',W/2,150);x.fillStyle='#14532d';x.font='40px sans-serif';x.fillText(url,W/2,1720);setPng(cv.toDataURL('image/png'))})()},[url])
+return <div className="max-w-md mx-auto p-4 text-center"><div className="flex justify-center"><Logo size={60}/></div><h1 className="font-bold text-xl my-2">QR Poster</h1><canvas ref={c} className="w-full border rounded-xl"/>
+<a href={png} download="apna-bazaar-qr-poster.png" className="block mt-3 bg-green-600 text-white font-bold rounded-2xl py-4">⬇ Download Poster (1240×1754)</a></div>}
+  
